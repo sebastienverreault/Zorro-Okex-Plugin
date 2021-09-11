@@ -8,6 +8,10 @@
 #include <math.h>
 #include <ATLComTime.h>
 
+#define SET_MARGIN_MODE			2000 // User supplied command with a single numerical parameter. //  (0:cross , 1:isolated, 2:cash)
+#define SET_ACCOUNT_LEVERAGE	3000 // User supplied command with an array of 8 var parameters. //  (0:cross , 1:isolated, 2:cash)
+#define SET_TRADE_MODE			4000 // User supplied command with a text string.                //  (0:cross , 1:isolated, 2:cash)
+
 BOOL APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
                        LPVOID lpReserved
@@ -39,7 +43,7 @@ typedef double DATE;
 
 /////////////////////////////////////////////////////////////
 const char* NAME = "OKEx V5";
-const char* RHEADER = "https://www.okex.com/";
+const char* HOST = "https://www.okex.com";
 const char* TOKERR = "error";
 
 //The Production Trading URL :
@@ -75,8 +79,10 @@ static BOOL g_bDemoOnly = TRUE;
 static BOOL g_bIsDemo = TRUE;
 static BOOL g_bConnected = FALSE;
 static char g_Account[32] = "", g_Asset[64] = "";
+static char g_TradeMode[32] = "";
 static char g_Uuid[256] = "";
 static char g_Password[256] = "", g_Secret[256] = "", g_Passphrase[256] = "";
+static char g_Timestamp[64];
 static char g_Command[1024];
 static int g_Warned = 0;
 static BOOL isForex;
@@ -193,77 +199,98 @@ char* fixAsset(char* Asset,int Mode = 1)
 	return NewAsset;
 }
 
+BOOL isIndexAsset(char* Asset)
+{
+	// OKEx has USDT spot but not USD
+	// so instrument of the "<XXX>-USD" are underlying indexes
+	// to be able to get market data, 
+	// we need to be able to identify them
+	// and we need to use a different endpoint at minimum
+	static char Usd[32];
+	char* Minus = strchr(Asset, '-');
+	if (Minus) {
+		strcpy_s(Usd, Minus + 1);
+		BOOL isIndex = (0 == strcmp(Usd, "USD"));
+		//if(!isIndex) isIndex = (0 == strcmp(Usd, "USDT"));
+		return isIndex;
+	}
+	return FALSE;
+}
+
 const char* getSignature(std::string Post)
 {
+	static char cstr[128];
 	std::string PrivateKey = g_Secret;
 
-//Post = "symbol=LTCBTC&side=BUY&type=LIMIT&timeInForce=GTC&quantity=1&price=0.1&recvWindow=5000&timestamp=1499827319559";
-//PrivateKey = "NhqPtmdSJYdKjVHjA7PZj4Mge3R5YNiP1e3UZjInClVN65XAbvqqM6A7H5fATj0j";
-// -> c8db56825ae71d6d79447849e617115f4a920fa2acdcab2b053c4b2838bd6b71
+	//Post = "symbol=LTCBTC&side=BUY&type=LIMIT&timeInForce=GTC&quantity=1&price=0.1&recvWindow=5000&timestamp=1499827319559";
+	//PrivateKey = "NhqPtmdSJYdKjVHjA7PZj4Mge3R5YNiP1e3UZjInClVN65XAbvqqM6A7H5fATj0j";
+	// -> c8db56825ae71d6d79447849e617115f4a920fa2acdcab2b053c4b2838bd6b71
+
+	// Post = "2021-09-11T09:13:18.124ZGET/api/v5/account/balance"
+	// PrivateKey = "84e00892-e563-4791-8bc8-4b624b1b8481"
+	// => 
+	// base64.c_str() == "PYWLHcBhpi2xUTzazoRjvVf8q2oq492Ym28mvd8/qKI="
 
 	unsigned char hmac_256[SHA256::DIGEST_SIZE];
 	memset(hmac_256, 0, SHA256::DIGEST_SIZE);
-	//std::string encp = base64_decode(PrivateKey);
 	HMAC256(PrivateKey, (unsigned char *)Post.c_str(), (int)Post.length(), hmac_256);
+	std::string base64 = base64_encode(hmac_256, SHA256::DIGEST_SIZE);
+	strcpy_s(cstr, base64.c_str());
 
-	static char buf[2 * SHA256::DIGEST_SIZE + 1];
-	buf[2 * SHA256::DIGEST_SIZE] = 0;
-	for (int i = 0; i < SHA256::DIGEST_SIZE; i++)
-		sprintf(buf + i * 2, "%02x", hmac_256[i]);
-	
-	return buf;
+	return cstr;
 }
 
 static int DoTok = 0;
 
-char* send(const char* dir,const char* param = NULL,int crypt = 0)
+char* send(const char* path, const char* body = NULL, int crypt = 0)
 {
 	int id;
-	strcpy_s(g_Command,RHEADER);
-	strcat_s(g_Command,dir);
+	char Prehash[1024];
+	strcpy_s(g_Command,HOST);
+	strcat_s(g_Command,path);
 	if(crypt) {
-		int CmdLength = (int)strlen(g_Command);
-		strcat_s(g_Command,"?recvWindow=50000");
-		strcat_s(g_Command,"&timestamp=");
-		__time64_t Time;
-		_time64(&Time);
-		strcat_s(g_Command,i64toa(Time*1000));
-		if(param)
-			strcat_s(g_Command,param);
+		// Timestamp the signature
+		time_t Time;
+		time(&Time);
+		tm* tm;
+		tm = gmtime(&Time);
+		strftime(g_Timestamp, 64, "%Y-%m-%dT%H:%M:%SZ", tm);// 2021-09-10T13:53:46.123Z
 
-		char* TotalParams = g_Command+CmdLength+1;
-		//TotalParams = "symbol=LTCBTC&side=BUY&type=LIMIT&timeInForce=GTC&quantity=1&price=0.1&recvWindow=5000&timestamp=1499827319559";
-		const char* Signature = getSignature(TotalParams); 
-		strcat_s(g_Command,"&signature=");
-		strcat_s(g_Command,Signature);
-		
+		strcpy_s(Prehash, g_Timestamp);
+		if (body)
+			strcat_s(Prehash, "POST");
+		else
+			strcat_s(Prehash, "GET");
+		strcat_s(Prehash, path);
+		if(body) 
+			strcat_s(Prehash, body);
+		// Prehash = timestamp + "GET" + "/users/self/verify" + ""
+		// "2021-09-11T09:13:18.124Z"
+		// "GET"
+		// "/api/v5/account/balance"
+		// Prehash = "2021-09-11T09:13:18.124ZGET/api/v5/account/balance"
+		// OK-ACCESS-KEY: "84e00892-e563-4791-8bc8-4b624b1b8481"
+		// =>
+		// OK-ACCESS-SIGN: "PYWLHcBhpi2xUTzazoRjvVf8q2oq492Ym28mvd8/qKI="
+		const char* okexSignatureTest = getSignature("2021-09-11T09:13:18.124ZGET/api/v5/account/balance");
+		const char* okexSignature = getSignature(Prehash);
+
 		char Header[1024]; 
-		//strcpy_s(Header,"Content-Type:application/json");
-		//strcpy_s(Header,"Content-Type: application/json");
-		//strcpy_s(Header,"OK-ACCESS-KEY: ");
-		//strcat_s(Header, g_okAccessKey);					// 37c541a1-****-****-****-10fe7a038418
-		//strcpy_s(Header,"OK-ACCESS-SIGN: ");
-		//strcat_s(Header, g_okAccessSign);					// leaVRETrtaoEQ3yI9qEtI1CZ82ikZ4xSG5Kj8gnl3uw=
-		//strcpy_s(Header,"OK-ACCESS-PASSPHRASE: ");
-		//strcat_s(Header, g_okAccessPassphrase);			// 1****6
-		//strcpy_s(Header,"OK-ACCESS-TIMESTAMP: ");
-		//strcat_s(Header, g_okAccessTimestamp);			// 2020-03-28T12:21:41.274Z
-		//strcpy_s(Header,"x-simulated-trading: 1");
-
-		//strcat_s(Header,"\nAccept:application/json");
-		strcpy_s(Header,"X-MBX-APIKEY: ");
-		strcat_s(Header,g_Password);
+		strcpy_s(Header,"Content-Type: application/json");
+		strcat_s(Header,"\nOK-ACCESS-KEY: "); strcat_s(Header, g_Password);
+		strcat_s(Header,"\nOK-ACCESS-SIGN: "); strcat_s(Header, okexSignature);
+		strcat_s(Header,"\nOK-ACCESS-PASSPHRASE: "); strcat_s(Header, g_Passphrase);
+		strcat_s(Header,"\nOK-ACCESS-TIMESTAMP: "); strcat_s(Header, g_Timestamp);			
+		if(g_bIsDemo) strcat_s(Header,"\nx-simulated-trading: 1");
 		
 		if(crypt == 3)
 			id = http_send(g_Command,"#DELETE",Header);
 		else if(crypt == 2)
 			id = http_send(g_Command,"#POST",Header);
 		else
-			id = http_send(g_Command,NULL,Header);
+			id = http_send(g_Command,body,Header);
 	} else {
-		if(param) 
-			strcat_s(g_Command,param);
-		id = http_send(g_Command,NULL,NULL);
+		id = http_send(g_Command,body,NULL);
 	}
 
 	if(crypt >= 2 && g_nDiag >= 2) {
@@ -359,6 +386,13 @@ DLLFUNC int BrokerHTTP(FARPROC fp_send,FARPROC fp_status,FARPROC fp_result,FARPR
 DLLFUNC int BrokerTime(DATE *pTimeGMT)
 {
 	if(!isConnected()) return 0;
+
+	char Path[512] = "/api/v5/public/time";
+	char* Result = send(Path, NULL, 1);
+	if (!Result || !*Result) return 0;
+	if (!parse(Result)) return 0;
+	if (pTimeGMT) *pTimeGMT = convertTime(_atoi64(parse(Result, "ts")));
+
 	return 2;
 }
 
@@ -370,18 +404,38 @@ DLLFUNC int BrokerAccount(char* Account,double *pdBalance,double *pdTradeVal,dou
 	if(!Account || !*Account) 
 		Account = (char *)"BTC";
 
-	char* Response = send("v3/account",0,1);
-	if(!Response) return 0;
-	parse(Response);
+	char Path[512] = "/api/v5/account/balance";
+	char* Result = send(Path, NULL, 1);
+	if (!Result || !*Result) return 0;
+	if (!parse(Result)) return 0;
+
+	// Find '"details": [{' where '"ccy": "BTC",' or '"ccy": "<Account>",'
+	// then
+	// pBalance = "eqUsd"
+	// pTradeVal = "eqUsd" * "notionalLever" ?!?
+	// pMarginVal = "frozenBal" * "eqUsd" / "eq"
 	double Balance = 0;
-	while(1) {
-		const char* Found = parse(NULL,"asset");
-		if(!Found || !*Found) break;
-		if(0 == strcmp(Found,Account))
-			Balance += atof(parse(NULL,"free")); // deposit - exchange - trading
+	double TradeVal = 0;
+	double MarginVal = 0;
+	while (1) {
+		const char* Found = parse(NULL, "ccy");
+		if (!Found || !*Found) break;
+		if (0 == strcmp(Found, Account)){
+			double eqUsd = atof(parse(NULL, "eqUsd"));
+			Balance += eqUsd;
+			
+			double notionalLever = atof(parse(NULL, "notionalLever"));
+			TradeVal += eqUsd * notionalLever;
+			
+			double eq = atof(parse(NULL, "eq"));
+			double frozenBal = atof(parse(NULL, "frozenBal"));
+			if(eq > 0.) MarginVal += frozenBal * eqUsd / eq;
+		}
 	}
-	if(pdBalance) *pdBalance = Balance;
-	return Balance > 0.? 1 : 0;
+	if (pdBalance) *pdBalance = Balance;
+	if (pdTradeVal) *pdTradeVal = TradeVal;
+	if (pdMarginVal) *pdMarginVal = MarginVal;
+	return Balance > 0. ? 1 : 0;
 }
 
 
@@ -391,18 +445,33 @@ DLLFUNC int BrokerAsset(char* Asset,double* pPrice,double* pSpread,
 {
 	if(!isConnected()) return 0;
 
-	char* Result =	send("v3/ticker/bookTicker?symbol=",fixAsset(Asset),0);
+	BOOL isIndex = isIndexAsset(Asset);
+
+	char Path[512] = "/api/v5/market/ticker?instId=";
+	if (isIndex) 
+		strcpy_s(Path, "/api/v5/market/index-tickers?instId=");
+	strcat_s(Path, Asset);
+	char* Result =	send(Path,NULL,0);
 	if(!Result || !*Result) return 0;
 	if(!parse(Result)) return 0;
-	double Bid = atof(parse(Result,"bidPrice"));
-	double Ask = atof(parse(Result,"askPrice"));
-	double Volume = atof(parse(Result,"bidQty"))+atof(parse(Result,"askQty"));
-	if(Ask == 0. || Bid == 0.) return 0;
-	if(pPrice) *pPrice = Ask;
-	if(pSpread) *pSpread = Ask - Bid;
-	if(pVolume) *pVolume = Volume;
+
+	if (isIndex) {
+		double Bid = atof(parse(Result, "idxPx"));
+		double Ask = atof(parse(Result, "idxPx"));
+		if (Ask == 0. || Bid == 0.) return 0;
+		if (pPrice) *pPrice = Ask;
+		if (pSpread) *pSpread = Ask - Bid;
+	}else{
+		double Bid = atof(parse(Result,"bidPx"));
+		double Ask = atof(parse(Result,"askPx"));
+		double Volume = atof(parse(Result,"bidSz"))+atof(parse(Result,"askSz"));
+		if(Ask == 0. || Bid == 0.) return 0;
+		if(pPrice) *pPrice = Ask;
+		if(pSpread) *pSpread = Ask - Bid;
+		if(pVolume) *pVolume = Volume;
+	}
 	return 1;
-}	
+}
 
 
 DLLFUNC int BrokerHistory2(char* Asset,DATE tStart,DATE tEnd,int nTickMinutes,int nTicks,T6* ticks)
@@ -416,34 +485,40 @@ DLLFUNC int BrokerHistory2(char* Asset,DATE tStart,DATE tEnd,int nTickMinutes,in
 	else if(30 <= nTickMinutes) tf = "30m";
 	else if(15 <= nTickMinutes) tf = "15m";
 	else if(5 <= nTickMinutes) tf = "5m"; 
-	
-	char Command[256] = "?symbol=";
-	strcat_s(Command,fixAsset(Asset,0));
-	strcat_s(Command,"&interval=");
-	strcat_s(Command,tf);
-	strcat_s(Command,"&limit=");
-	strcat_s(Command,itoa(nTicks));
-	strcat_s(Command,"&startTime=");
-	strcat_s(Command,i64toa(convertTime(tStart)));
-	strcat_s(Command,"&endTime=");
-	strcat_s(Command,i64toa(convertTime(tEnd)));
-	char* Result = send("v1/klines",Command,0);
-	if(!Result || !*Result) goto raus;
-	Result = strchr(Result,'[');
-	if(!Result || !*Result) goto raus;
-	{
-		int i = 0;
-		for (; i < nTicks; i++, ticks++) {
-			Result = strchr(++Result, '[');
-			if (!Result || !*Result) break;
-			__int64 TimeOpen, TimeClose;
-			sscanf(Result, "[%I64d,\"%f\",\"%f\",\"%f\",\"%f\",\"%f\",%I64d,",
-				&TimeOpen, &ticks->fOpen, &ticks->fHigh, &ticks->fLow, &ticks->fClose, &ticks->fVol, &TimeClose);
-			ticks->time = convertTime(TimeClose);
+
+	nTicks = max(nTicks, 100);
+
+	BOOL isIndex = isIndexAsset(Asset);
+	char Path[512] = "/api/v5/market/history-candles?instId=";
+	if (isIndex)
+		strcpy_s(Path, "/api/v5/market/index-candles?instId=");
+	strcat_s(Path, Asset);
+	strcat_s(Path, "&before=");
+	strcat_s(Path, i64toa(convertTime(tStart)));
+	strcat_s(Path, "&after=");
+	strcat_s(Path, i64toa(convertTime(tEnd)));
+	strcat_s(Path, "&bar=");
+	strcat_s(Path, tf);
+	strcat_s(Path, "&limit=");
+	strcat_s(Path, itoa(nTicks));
+	char* Result = send(Path, NULL, 0);
+
+	if (Result && *Result) {
+		Result = strchr(Result, '[');
+		if (Result && *Result) {
+			int i = 0;
+			for (; i < nTicks; i++, ticks++) {
+				Result = strchr(++Result, '[');
+				if (!Result || !*Result) break;
+				__int64 TimeClose;
+				sscanf(Result, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
+					&TimeClose, &ticks->fOpen, &ticks->fHigh, &ticks->fLow, &ticks->fClose, &ticks->fVol);
+				ticks->time = convertTime(TimeClose);
+			}
+			return i;
 		}
-		return i;
 	}
-raus:
+
 	if(g_Warned++ <= 1) showError(Asset,"no data");
 	return 0;
 }
@@ -451,106 +526,155 @@ raus:
 
 
 // returns negative amount when the trade was closed
-DLLFUNC int BrokerTrade(int nTradeID,double *pOpen,double *pClose,double *pRoll,double *pProfit)
+DLLFUNC int BrokerTrade(int nTradeID,double *pOpen,double *pClose,double *pCost,double *pProfit)
 {
 	if(!isConnected(1)) return 0;
 
-	char Param[512] = "&symbol=";
-	strcat_s(Param,g_Asset);
-	strcat_s(Param,"&origClientOrderId=");
-	strcat_s(Param,itoa(nTradeID));
-	char* Result = send("v3/order",Param,1);
+	char Path[512] = "/api/v5/trade/order?ordId=";
+	strcat_s(Path, itoa(nTradeID));
+	strcat_s(Path, "&instId=");
+	strcat_s(Path, g_Asset);
+	char* Result = send(Path, NULL, 1);
+
 	if(!Result || !*Result) return 0;
 /*// response
 {
-  "symbol": "LTCBTC",
-  "orderId": 1,
-  "clientOrderId": "myOrder1",
-  "price": "0.1",
-  "origQty": "1.0",
-  "executedQty": "0.0",
-  "status": "NEW",
-  "timeInForce": "GTC",
-  "type": "LIMIT",
-  "side": "BUY",
-  "stopPrice": "0.0",
-  "icebergQty": "0.0",
-  "time": 1499827319559,
-  "isWorking": true
- }*/
-	if(!strstr(Result,"clientOrderId")) return 0;
+  "code": "0",
+  "msg": "",
+  "data": [
+	{
+	  "instType": "FUTURES",
+	  "instId": "BTC-USD-200329",
+	  "ccy": "",
+	  "ordId": "312269865356374016",
+	  "clOrdId": "b1",
+	  "px": "999",
+	  "sz": "3",
+	  "pnl": "5",
+	  "ordType": "limit",
+	  "side": "buy",
+	  "posSide": "long",
+	  "tdMode": "isolated",
+	  "accFillSz": "0",
+	  "fillPx": "0",
+	  "tradeId": "0",
+	  "fillSz": "0",
+	  "fillTime": "0",
+	  "state": "live",
+	  "avgPx": "0",
+	  "lever": "20",
+	  "feeCcy": "",
+	  "fee": "",
+	  "uTime": "1597026383085",
+	  "cTime": "1597026383085"
+	}
+  ]
+}
+*/
+	if(!strstr(Result,"ordId")) return 0;
 	if(!parse(Result)) return 0;
-	double Price = atof(parse(Result,"price"));
-	if(pOpen) *pOpen = Price;
-	int Fill = atof(parse(Result,"executedQty"))/g_Amount;
+	double Price = atof(parse(Result, "avgPx"));
+	if (pOpen) *pOpen = Price;
+	double Cost = atof(parse(Result, "fee"));
+	if (pCost) *pCost = Cost;
+	double Profit = atof(parse(Result, "pnl"));
+	if (pProfit) *pProfit = Profit;
+	int Fill = atof(parse(Result,"accFillSz"))/g_Amount;
 	return Fill;
 }
 
 DLLFUNC int BrokerBuy2(char* Asset,int Amount,double dStopDist,double Limit,double *pPrice,int *pFill)
 {
 	if(!isConnected(1)) return 0;
-	strcpy_s(g_Asset,fixAsset(Asset)); // for BrokerTrade
+	strcpy_s(g_Asset,Asset); // for BrokerTrade
 
-	char Param[512] = "&symbol=";
-	strcat_s(Param,g_Asset);
-	strcat_s(Param,"&side=");
-	if(Amount > 0) 
-		strcat_s(Param,"BUY");
+	char Path[512] = "/api/v5/trade/order";
+	char side[16];
+	if (Amount > 0)
+		strcat_s(side, "BUY");
 	else
-		strcat_s(Param,"SELL");
-	strcat_s(Param,"&type=");
-	if(Limit > 0.) {
-		double TickSize = 0.0000001;
-		Limit = ((int)(Limit/TickSize))*TickSize;	// clip to integer multiple of tick size
-		strcat_s(Param,"LIMIT");
-		strcat_s(Param,"&price=");
-		strcat_s(Param,ftoa(Limit));
-		strcat_s(Param,"&timeInForce=");
-		if(g_OrderType == 1)
-			strcat_s(Param,"IOC");
-		else if(g_OrderType == 2)
-			strcat_s(Param,"GTC");
+		strcat_s(side, "SELL");
+	char ordType[16], px[6];
+	if (Limit > 0. && (g_OrderType == 1 || g_OrderType == 5)) {
+		double TickSize = 0.01; // todo: fix this
+		Limit = ((int)(Limit / TickSize))*TickSize;	// clip to integer multiple of tick size
+		if (g_OrderType == 1)
+			strcat_s(ordType, "limit");
 		else
-			strcat_s(Param,"FOK");
-	} else
-		strcat_s(Param,"MARKET");
-	strcat_s(Param,"&newOrderRespType=FULL");
-	strcat_s(Param,"&quantity=");
-	strcat_s(Param,ftoa(g_Amount*labs(Amount)));
-	strcat_s(Param,"&newClientOrderId=");
-	strcat_s(Param,itoa(g_Id++));
-	char* Result = send("v3/order",Param,2);
+			strcat_s(ordType, "optimal_limit_ioc");
+		strcat_s(px, ftoa(Limit));
+	} 
+	//else if (g_OrderType == 1)
+	//	strcat_s(ordType, "limit");
+	else if (g_OrderType == 2)
+		strcat_s(ordType, "post_only");
+	else if (g_OrderType == 3)
+		strcat_s(ordType, "fok");
+	else if (g_OrderType == 4)
+		strcat_s(ordType, "ioc");
+	//else if (g_OrderType == 5)
+	//	strcat_s(ordType, "optimal_limit_ioc");
+	else //if (g_OrderType == 0)
+		strcat_s(ordType, "market");
+	char sz[6];
+	strcat_s(sz, ftoa(g_Amount*labs(Amount)));
+	char Body[512];
+	sprintf_s(Body, "{ \"instId\":%s, \"clOrdId\": %i, \"tdMode\": %s, \"side\": %s, \"ordType\": %s, \"px\": %s, \"sz\": %s}", g_Asset, g_Id++, g_TradeMode, side, ordType, px, sz);
+	char* Result = send(Path, Body, 1);
 	if(!Result || !*Result) {
-		showError(Param,"- no result");
+		char Context[512];
+		sprintf_s(Context, "%s - %s", Path, Body);
+		showError(Context,"- no result");
 		return 0;
 	}
 /*// response
 {
-  "symbol": "BTCUSDT",
-  "orderId": 28,
-  "clientOrderId": "6gCrw2kRUAF9CvJDGP16IP",
-  "transactTime": 1507725176595,
-  "price": "0.00000000",
-  "origQty": "10.00000000",
-  "executedQty": "10.00000000",
-  "status": "FILLED",
-  "timeInForce": "GTC",
-  "type": "MARKET",
-  "side": "SELL"
- }*/
-	if(!strstr(Result,"clientOrderId")) {
-		showError(Param,Result);
+  "code": "0",
+  "msg": "",
+  "data": [
+	{
+	  "clOrdId": "oktswap6",
+	  "ordId": "312269865356374016",
+	  "tag": "",
+	  "sCode": "0",
+	  "sMsg": ""
+	}
+  ]
+}
+*/
+	if(!strstr(Result,"clOrdId")) {
+		char Context[512];
+		sprintf_s(Context, "%s - %s", Path, Body);
+		showError(Context,Result);
 		return 0;
 	}
 	if(!parse(Result)) {
 		showError(Result,"- invalid");
 		return 0;
 	}
-	int Id = atoi(parse(Result,"clientOrderId"));
-	int Fill = atof(parse(Result,"executedQty"))/g_Amount;
-	parse(NULL,"fills");
-	double Price = atof(parse(NULL,"price"));
-	double Commission = atof(parse(NULL,"commission"));
+	int Id = atoi(parse(Result, "clOrdId"));
+	const char* ordId = parse(Result, "ordId");
+
+	//char Path2[512] = "/api/v5/trade/order";
+	strcat_s(Path, "?ordId=");
+	strcat_s(Path, ordId);
+	strcat_s(Path, "&instId=");
+	strcat_s(Path, g_Asset);
+	Result = send(Path, NULL, 1);
+	if (!Result || !*Result) {
+		showError(Path, "- no result");
+		return 0;
+	}
+	if (!strstr(Result, "clOrdId")) {
+		showError(Path, "- no result");
+		return 0;
+	}
+	if (!parse(Result)) {
+		showError(Result, "- invalid");
+		return 0;
+	}
+	int Fill = atof(parse(Result,"accFillSz"))/g_Amount;
+	double Price = atof(parse(NULL,"avgPx"));
 	if(pPrice && Price > 0.) *pPrice = Price;
 	if(pFill) *pFill = Fill;
 	if(g_OrderType == 2 || Fill == Amount)
@@ -628,16 +752,42 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 		case SET_ORDERTYPE: 
 			return g_OrderType = parameter;
 
-		case SET_SYMBOL: { 
-			char* Asset = fixAsset((char*)parameter);
-			if(!Asset || !*Asset) return 0;
-			strcpy_s(g_Asset,Asset); 
+		case SET_SYMBOL: {
+			char* Asset = (char*)parameter;
+			if (!Asset || !*Asset) return 0;
+			strcpy_s(g_Asset, Asset);
+			return 1;
+		}
+
+		case SET_ACCOUNT_LEVERAGE: {
+			var* parameters = (var*)parameter;
+			if (!isConnected(1)) return 0;
+			char Path[512] = "/api/v5/account/set-leverage";
+			char Body[512];
+			char* instId = (char*)parameters;// [0];
+			if (!instId || !*instId) return 0;
+			char* lever = (char*)parameters;// [1];
+			if (!lever || !*lever) return 0;
+			char* mgnMode = (char*)parameters;// [2];
+			if (!mgnMode || !*mgnMode) return 0;
+			char* posSide = (char*)parameters;// [3];
+			if (!posSide || !*posSide) return 0;
+			sprintf_s(Body, "{\"instId\": \"%s\",\"lever\": \"%s,\"mgnMode\": \"%s,\"posSide\": \"%s\"}", instId, lever, mgnMode, posSide);
+			char* Result = send(Path, Body, 1);
+			if (!Result || !*Result) return 0;
+			return 1;
+		}
+
+		case SET_TRADE_MODE: {
+			char* TradeMode = (char*)parameter;
+			if (!TradeMode || !*TradeMode) return 0;
+			strcpy_s(g_TradeMode, TradeMode);
 			return 1;
 		}
 
 		case GET_POSITION: {
 			double Balance = 0;
-			char* Asset = fixAsset((char*)parameter);
+			char* Asset = (char*)parameter;
 			int Len = (int)strlen(Asset);
 			if(Len > 5) Asset[Len-3] = 0; // clip trailing "BTC"
 			BrokerAccount(Asset,&Balance,NULL,NULL);
@@ -646,11 +796,10 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 
 		case DO_CANCEL: {
 			if(!isConnected(1)) return 0;
-			char Param[512] = "&symbol=";
-			strcat_s(Param,g_Asset);
-			strcat_s(Param,"&origClientOrderId=");
-			strcat_s(Param,itoa(parameter));
-			char* Result = send("v3/order",Param,3);
+			char Path[512] = "/api/v5/trade/cancel-order";
+			char Body[512];
+			sprintf_s(Body, "{\"clOrdId\": \"%s\",\"instId\": \"%s\"}", itoa(parameter), g_Asset);
+			char* Result = send(Path, Body, 1);
 			if(!Result || !*Result) return 0;
 			return 1;
 		}
@@ -697,4 +846,3 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 
 	return 0.;
 }
-
