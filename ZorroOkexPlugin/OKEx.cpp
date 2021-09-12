@@ -436,9 +436,9 @@ DLLFUNC int BrokerTime(DATE *pTimeGMT)
 	if(!isConnected()) return 0;
 
 	char Path[512] = "/api/v5/public/time";
-	char* Result = send(Path, NULL, 1);
-	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
-	if (pTimeGMT) *pTimeGMT = convertTime(_atoi64(parse(Result, "ts")));
+	char* Response = send(Path, NULL, 1);
+	if (!isResponseOk(Path, NULL, Response, NULL, NULL, 0)) return 0;
+	if (pTimeGMT) *pTimeGMT = convertTime(_atoi64(parse(Response, "ts")));
 
 	return 2;
 }
@@ -452,8 +452,8 @@ DLLFUNC int BrokerAccount(char* Account,double *pdBalance,double *pdTradeVal,dou
 		Account = (char *)"BTC";
 
 	char Path[512] = "/api/v5/account/balance";
-	char* Result = send(Path, NULL, 1);
-	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
+	char* Response = send(Path, NULL, 1);
+	if (!isResponseOk(Path, NULL, Response, NULL, NULL, 0)) return 0;
 
 	// Find '"details": [{' where '"ccy": "BTC",' or '"ccy": "<Account>",'
 	// then
@@ -497,19 +497,19 @@ DLLFUNC int BrokerAsset(char* Asset,double* pPrice,double* pSpread,
 	if (isIndex) 
 		strcpy_s(Path, "/api/v5/market/index-tickers?instId=");
 	strcat_s(Path, Asset);
-	char* Result =	send(Path,NULL,0);
-	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
+	char* Response =	send(Path,NULL,0);
+	if (!isResponseOk(Path, NULL, Response, NULL, NULL, 0)) return 0;
 
 	if (isIndex) {
-		double Bid = atof(parse(Result, "idxPx"));
-		double Ask = atof(parse(Result, "idxPx"));
+		double Bid = atof(parse(Response, "idxPx"));
+		double Ask = atof(parse(Response, "idxPx"));
 		if (Ask == 0. || Bid == 0.) return 0;
 		if (pPrice) *pPrice = Ask;
 		if (pSpread) *pSpread = Ask - Bid;
 	}else{
-		double Bid = atof(parse(Result,"bidPx"));
-		double Ask = atof(parse(Result,"askPx"));
-		double Volume = atof(parse(Result,"bidSz"))+atof(parse(Result,"askSz"));
+		double Bid = atof(parse(Response,"bidPx"));
+		double Ask = atof(parse(Response,"askPx"));
+		double Volume = atof(parse(Response,"bidSz"))+atof(parse(Response,"askSz"));
 		if(Ask == 0. || Bid == 0.) return 0;
 		if(pPrice) *pPrice = Ask;
 		if(pSpread) *pSpread = Ask - Bid;
@@ -546,17 +546,17 @@ DLLFUNC int BrokerHistory2(char* Asset,DATE tStart,DATE tEnd,int nTickMinutes,in
 	strcat_s(Path, tf);
 	strcat_s(Path, "&limit=");
 	strcat_s(Path, itoa(nTicks));
-	char* Result = send(Path, NULL, 0);
-	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
+	char* Response = send(Path, NULL, 0);
+	if (!isResponseOk(Path, NULL, Response, NULL, NULL, 0)) return 0;
 
-	Result = strchr(Result, '[');
-	if (Result && *Result) {
+	Response = strchr(Response, '[');
+	if (Response && *Response) {
 		int i = 0;
 		for (; i < nTicks; i++, ticks++) {
-			Result = strchr(++Result, '[');
-			if (!Result || !*Result) break;
+			Response = strchr(++Response, '[');
+			if (!Response || !*Response) break;
 			__int64 TimeClose;
-			sscanf(Result, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
+			sscanf(Response, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
 				&TimeClose, &ticks->fOpen, &ticks->fHigh, &ticks->fLow, &ticks->fClose, &ticks->fVol);
 			ticks->time = convertTime(TimeClose);
 		}
@@ -579,10 +579,10 @@ DLLFUNC int BrokerTrade(int nTradeID,double *pOpen,double *pClose,double *pCost,
 	strcat_s(Path, clOrdId);
 	strcat_s(Path, "&instId=");
 	strcat_s(Path, g_Asset);
-	char* Result = send(Path, NULL, 1);
+	char* Response = send(Path, NULL, 1);
 	const char *names[] = { "clOrdId", "instId" };
 	const char *values[] = { clOrdId, g_Asset };
-	if (!isResponseOk(Path, NULL, Result, names, values, 2)) return 0;
+	if (!isResponseOk(Path, NULL, Response, names, values, 2)) return 0;
 
 /*// response
 {
@@ -618,13 +618,13 @@ DLLFUNC int BrokerTrade(int nTradeID,double *pOpen,double *pClose,double *pCost,
   ]
 }
 */
-	double Price = atof(parse(Result, "avgPx"));
+	double Price = atof(parse(Response, "avgPx"));
 	if (pOpen) *pOpen = Price;
-	double Cost = atof(parse(Result, "fee"));
+	double Cost = atof(parse(Response, "fee"));
 	if (pCost) *pCost = Cost;
-	double Profit = atof(parse(Result, "pnl"));
+	double Profit = atof(parse(Response, "pnl"));
 	if (pProfit) *pProfit = Profit;
-	int Fill = atof(parse(Result,"accFillSz"))/g_Amount;
+	int Fill = atof(parse(Response,"accFillSz"))/g_Amount;
 	return Fill;
 }
 
@@ -666,11 +666,11 @@ DLLFUNC int BrokerBuy2(char* Asset,int Amount,double dStopDist,double Limit,doub
 	char Body[512];
 	int iClOrdId = g_Id++;
 	char* clOrdId = itoa(iClOrdId);
-	sprintf_s(Body, "{ \"instId\":%s, \"clOrdId\": %i, \"tdMode\": %s, \"side\": %s, \"ordType\": %s, \"px\": %s, \"sz\": %s}", g_Asset, clOrdId, g_TradeMode, side, ordType, px, sz);
-	char* Result = send(Path, Body, 1);
+	sprintf_s(Body, "{ \"instId\":%s, \"clOrdId\": %s, \"tdMode\": %s, \"side\": %s, \"ordType\": %s, \"px\": %s, \"sz\": %s}", g_Asset, clOrdId, g_TradeMode, side, ordType, px, sz);
+	char* Response = send(Path, Body, 1);
 	const char *names[] = { "clOrdId" };
 	const char *values[] = { clOrdId };
-	if (!isResponseOk(Path, Body, Result, names, values, 1)) return 0;
+	if (!isResponseOk(Path, Body, Response, names, values, 1)) return 0;
 /*// response
 {
   "code": "0",
@@ -692,10 +692,10 @@ DLLFUNC int BrokerBuy2(char* Asset,int Amount,double dStopDist,double Limit,doub
 	strcat_s(Path, clOrdId);
 	strcat_s(Path, "&instId=");
 	strcat_s(Path, g_Asset);
-	Result = send(Path, NULL, 1);
-	if (!isResponseOk(Path, NULL, Result, names, values, 1)) return 0;
+	Response = send(Path, NULL, 1);
+	if (!isResponseOk(Path, NULL, Response, names, values, 1)) return 0;
 
-	int Fill = atof(parse(Result,"accFillSz"))/g_Amount;
+	int Fill = atof(parse(Response,"accFillSz"))/g_Amount;
 	double Price = atof(parse(NULL,"avgPx"));
 	if(pPrice && Price > 0.) *pPrice = Price;
 	if(pFill) *pFill = Fill;
@@ -787,10 +787,10 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			char Path[64] = "/api/v5/account/set-position-mode";
 			char Body[64];
 			sprintf_s(Body, "{\"posMode\":\"%s\"}", PositionMode);
-			char* Result = send(Path, Body, 1);
+			char* Response = send(Path, Body, 1);
 			const char *names[] = { "posMode" };
 			const char *values[] = { PositionMode };
-			if (!isResponseOk(Path, Body, Result, names, values, 1)) return 0;
+			if (!isResponseOk(Path, Body, Response, names, values, 1)) return 0;
 			strcpy_s(g_PositionMode, PositionMode);
 			return 1;
 		}
@@ -809,10 +809,10 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			char* posSide = (char*)parameters;// [3];
 			if (!posSide || !*posSide) return 0;
 			sprintf_s(Body, "{\"instId\": \"%s\",\"lever\": \"%s,\"mgnMode\": \"%s,\"posSide\": \"%s\"}", instId, lever, mgnMode, posSide);
-			char* Result = send(Path, Body, 1);
+			char* Response = send(Path, Body, 1);
 			const char *names[] = { "instId", "lever", "mgnMode", "posSide" };
 			const char *values[] = { instId, lever, mgnMode, posSide };
-			if (!isResponseOk(Path, Body, Result, names, values, 4)) return 0;
+			if (!isResponseOk(Path, Body, Response, names, values, 4)) return 0;
 			return 1;
 		}
 
@@ -837,10 +837,10 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			char Path[512] = "/api/v5/trade/cancel-order";
 			char Body[512];
 			sprintf_s(Body, "{\"clOrdId\": \"%s\",\"instId\": \"%s\"}", itoa(parameter), g_Asset);
-			char* Result = send(Path, Body, 1);
+			char* Response = send(Path, Body, 1);
 			const char *names[] = { "clOrdId" };
 			const char *values[] = { (char*)parameter };
-			if (!isResponseOk(Path, Body, Result, names, values, 1)) return 0;
+			if (!isResponseOk(Path, Body, Response, names, values, 1)) return 0;
 			return 1;
 		}
 
@@ -848,15 +848,15 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 /*
 			T2* Quotes = (T2*)parameter;
 			if(!Quotes) return 0;
-			char* Result =	send("public/getmarketsummary?market=",g_Asset,1);
-			if(Result && *Result)
-				Quotes[0].time = convertTime(parse(Result,"TimeStamp"));
+			char* Response =	send("public/getmarketsummary?market=",g_Asset,1);
+			if(Response && *Response)
+				Quotes[0].time = convertTime(parse(Response,"TimeStamp"));
 			else
 				return 0;
 			int N = 0;
-			Result = send("public/getorderbook?type=sell&market=",g_Asset,0);
-			if(!Result) return N;
-			char* Success = parse(Result,"success");
+			Response = send("public/getorderbook?type=sell&market=",g_Asset,0);
+			if(!Response) return N;
+			char* Success = parse(Response,"success");
 			if(!strstr(Success,"true")) return N;
 			for(; N<MAX_QUOTES/2; N++) {
 				Quotes[N].fVol = atof(parse(NULL,"Quantity"));
@@ -865,9 +865,9 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 					break;
 				Quotes[N].time = Quotes[0].time;
 			}
-			Result = send("public/getorderbook?type=buy&market=",g_Asset,0);
-			if(!Result) return N;
-			Success = parse(Result,"success");
+			Response = send("public/getorderbook?type=buy&market=",g_Asset,0);
+			if(!Response) return N;
+			Success = parse(Response,"success");
 			if(!strstr(Success,"true")) return N;
 			for(; N<MAX_QUOTES-1; N++) {
 				Quotes[N].fVol = atof(parse(NULL,"Quantity"));
