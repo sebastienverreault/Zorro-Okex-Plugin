@@ -9,8 +9,9 @@
 #include <ATLComTime.h>
 
 #define SET_MARGIN_MODE			2000 // User supplied command with a single numerical parameter. //  (0:cross , 1:isolated, 2:cash)
-#define SET_ACCOUNT_LEVERAGE	3000 // User supplied command with an array of 8 var parameters. //  (0:cross , 1:isolated, 2:cash)
+#define SET_ACCOUNT_LEVERAGE	3000 // User supplied command with an array of 8 var parameters. //  ([0]:instId, [1]:lever, [2]:mgnMode -isolated | cross- [3]:posSide -long | short | net)
 #define SET_TRADE_MODE			4000 // User supplied command with a text string.                //  (0:cross , 1:isolated, 2:cash)
+#define SET_POSITION_MODE		4001 // User supplied command with a text string.                //  (long_short_mode | net_mode)
 
 BOOL APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
@@ -80,6 +81,7 @@ static BOOL g_bIsDemo = TRUE;
 static BOOL g_bConnected = FALSE;
 static char g_Account[32] = "", g_Asset[64] = "";
 static char g_TradeMode[32] = "";
+static char g_PositionMode[32] = "";
 static char g_Uuid[256] = "";
 static char g_Password[256] = "", g_Secret[256] = "", g_Passphrase[256] = "";
 static char g_Timestamp[64];
@@ -357,6 +359,49 @@ const char* parse(char* str, const char* key=NULL)
 	return "";
 }
 
+
+BOOL isResponseOk(const char* path, const char* body, char* response, const char** names, const char** values, int nameValuePairCount)
+{
+	char Request[512];
+	strcpy_s(Request, path);
+	if(body) strcat_s(Request, body);
+
+	// Validate there's a response to parse
+	if (!response || !*response) {
+		showError(Request, "- no response");
+		return FALSE;
+	}
+
+	// Validate the response's error code
+	if(!strstr(response, "code") || !parse(response)) {
+		showError(Request, response);
+		return FALSE;
+	} else {
+		const char* code = parse(response, "code");
+		if(0 != strcmp(code, "0")){
+			showError(Request, response);
+			return FALSE;
+		}
+		// else 
+		//	response is genuine, continue
+	}
+
+	// Validate the response is as expected
+	if (names && *names && values && *values && nameValuePairCount > 0) {
+		//int i;
+		for (int i = 0; i < nameValuePairCount; i++) {
+			const char* name = names[i];
+			const char* value = values[i];
+			if (!strstr(response, name) || !strstr(response, value)) {
+				showError(Request, response);
+				return FALSE;
+			}
+		}
+	}
+
+	return TRUE;
+}
+
 ////////////////////////////////////////////////////////////////
 
 DLLFUNC int BrokerOpen(char* Name,FARPROC fpError,FARPROC fpProgress)
@@ -389,8 +434,7 @@ DLLFUNC int BrokerTime(DATE *pTimeGMT)
 
 	char Path[512] = "/api/v5/public/time";
 	char* Result = send(Path, NULL, 1);
-	if (!Result || !*Result) return 0;
-	if (!parse(Result)) return 0;
+	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
 	if (pTimeGMT) *pTimeGMT = convertTime(_atoi64(parse(Result, "ts")));
 
 	return 2;
@@ -661,11 +705,7 @@ DLLFUNC int BrokerBuy2(char* Asset,int Amount,double dStopDist,double Limit,doub
 	strcat_s(Path, "&instId=");
 	strcat_s(Path, g_Asset);
 	Result = send(Path, NULL, 1);
-	if (!Result || !*Result) {
-		showError(Path, "- no result");
-		return 0;
-	}
-	if (!strstr(Result, "clOrdId")) {
+	if (!Result || !*Result || !strstr(Result, "clOrdId")) {
 		showError(Path, "- no result");
 		return 0;
 	}
@@ -759,6 +799,22 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			return 1;
 		}
 
+		case SET_POSITION_MODE: {
+			char* PositionMode = (char*)parameter;
+			if (!PositionMode || !*PositionMode) return 0;
+			char Path[64] = "/api/v5/account/set-position-mode";
+			char Body[64];
+			sprintf_s(Body, "{\"posMode\":\"%s\"}", PositionMode);
+			char* Result = send(Path, Body, 1);
+			if (!Result || !*Result) return 0;
+			if (!strstr(Result, "posMode") || !strstr(Result, PositionMode)) {
+				showError(Path, "- no result");
+				return 0;
+			}
+			strcpy_s(g_PositionMode, PositionMode);
+			return 1;
+		}
+
 		case SET_ACCOUNT_LEVERAGE: {
 			var* parameters = (var*)parameter;
 			if (!isConnected(1)) return 0;
@@ -774,7 +830,18 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			if (!posSide || !*posSide) return 0;
 			sprintf_s(Body, "{\"instId\": \"%s\",\"lever\": \"%s,\"mgnMode\": \"%s,\"posSide\": \"%s\"}", instId, lever, mgnMode, posSide);
 			char* Result = send(Path, Body, 1);
-			if (!Result || !*Result) return 0;
+			if (!Result || !*Result) {
+				showError(Path, "- no result");
+				return 0;
+			}
+			if (!strstr(Result, "instId") || !strstr(Result, instId) ||
+				!strstr(Result, "lever") || !strstr(Result, lever) ||
+				!strstr(Result, "mgnMode") || !strstr(Result, mgnMode) ||
+				!strstr(Result, "posSide") || !strstr(Result, posSide)
+				) {
+				showError(Path, Result);
+				return 0;
+			}
 			return 1;
 		}
 
