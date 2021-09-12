@@ -531,7 +531,7 @@ DLLFUNC int BrokerHistory2(char* Asset,DATE tStart,DATE tEnd,int nTickMinutes,in
 	else if(15 <= nTickMinutes) tf = "15m";
 	else if(5 <= nTickMinutes) tf = "5m"; 
 
-	nTicks = max(nTicks, 100);
+	nTicks = min(nTicks, 100);
 
 	BOOL isIndex = isIndexAsset(Asset);
 	char Path[512] = "/api/v5/market/history-candles?instId=";
@@ -547,21 +547,24 @@ DLLFUNC int BrokerHistory2(char* Asset,DATE tStart,DATE tEnd,int nTickMinutes,in
 	strcat_s(Path, "&limit=");
 	strcat_s(Path, itoa(nTicks));
 	char* Response = send(Path, NULL, 0);
+	char* dup = _strdup(Response); // need to duplicate the response as we will not use parse after
 	if (!isResponseOk(Path, NULL, Response, NULL, NULL, 0)) return 0;
 
-	Response = strchr(Response, '[');
-	if (Response && *Response) {
+	char *Found = strchr(dup, '[');
+	if (Found && *Found) {
 		int i = 0;
 		for (; i < nTicks; i++, ticks++) {
-			Response = strchr(++Response, '[');
-			if (!Response || !*Response) break;
+			Found = strchr(++Found, '[');
+			if (!Found || !*Found) break;
 			__int64 TimeClose;
-			sscanf(Response, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
+			sscanf(Found, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
 				&TimeClose, &ticks->fOpen, &ticks->fHigh, &ticks->fLow, &ticks->fClose, &ticks->fVol);
 			ticks->time = convertTime(TimeClose);
 		}
+		free(dup);
 		return i;
 	}
+	free(dup);
 
 	if(g_Warned++ <= 1) showError(Asset,"no data");
 	return 0;
