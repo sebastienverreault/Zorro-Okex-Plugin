@@ -106,7 +106,7 @@
       <EnableUAC>false</EnableUAC>
     </Link>
     <PostBuildEvent>
-      <Command>copy $(TargetPath) ..\..\ZorroBeta\Plugin\</Command>
+      <Command>copy $(TargetPath) ..\..\ZorroBeta\Plugin\Okex.dll</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
