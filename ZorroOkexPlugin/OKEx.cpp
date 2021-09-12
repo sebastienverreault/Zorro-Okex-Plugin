@@ -364,11 +364,14 @@ BOOL isResponseOk(const char* path, const char* body, char* response, const char
 {
 	char Request[512];
 	strcpy_s(Request, path);
-	if(body) strcat_s(Request, body);
+	if (body) { 
+		strcat_s(Request, " - "); 
+		strcat_s(Request, body); 
+	}
 
 	// Validate there's a response to parse
 	if (!response || !*response) {
-		showError(Request, "- no response");
+		showError(Request, " - no api response");
 		return FALSE;
 	}
 
@@ -450,8 +453,7 @@ DLLFUNC int BrokerAccount(char* Account,double *pdBalance,double *pdTradeVal,dou
 
 	char Path[512] = "/api/v5/account/balance";
 	char* Result = send(Path, NULL, 1);
-	if (!Result || !*Result) return 0;
-	if (!parse(Result)) return 0;
+	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
 
 	// Find '"details": [{' where '"ccy": "BTC",' or '"ccy": "<Account>",'
 	// then
@@ -496,8 +498,7 @@ DLLFUNC int BrokerAsset(char* Asset,double* pPrice,double* pSpread,
 		strcpy_s(Path, "/api/v5/market/index-tickers?instId=");
 	strcat_s(Path, Asset);
 	char* Result =	send(Path,NULL,0);
-	if(!Result || !*Result) return 0;
-	if(!parse(Result)) return 0;
+	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
 
 	if (isIndex) {
 		double Bid = atof(parse(Result, "idxPx"));
@@ -546,21 +547,20 @@ DLLFUNC int BrokerHistory2(char* Asset,DATE tStart,DATE tEnd,int nTickMinutes,in
 	strcat_s(Path, "&limit=");
 	strcat_s(Path, itoa(nTicks));
 	char* Result = send(Path, NULL, 0);
+	if (!isResponseOk(Path, NULL, Result, NULL, NULL, 0)) return 0;
 
+	Result = strchr(Result, '[');
 	if (Result && *Result) {
-		Result = strchr(Result, '[');
-		if (Result && *Result) {
-			int i = 0;
-			for (; i < nTicks; i++, ticks++) {
-				Result = strchr(++Result, '[');
-				if (!Result || !*Result) break;
-				__int64 TimeClose;
-				sscanf(Result, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
-					&TimeClose, &ticks->fOpen, &ticks->fHigh, &ticks->fLow, &ticks->fClose, &ticks->fVol);
-				ticks->time = convertTime(TimeClose);
-			}
-			return i;
+		int i = 0;
+		for (; i < nTicks; i++, ticks++) {
+			Result = strchr(++Result, '[');
+			if (!Result || !*Result) break;
+			__int64 TimeClose;
+			sscanf(Result, "[\"%I64d\",\"%f\",\"%f\",\"%f\",\"%f\",\"%f\"]",
+				&TimeClose, &ticks->fOpen, &ticks->fHigh, &ticks->fLow, &ticks->fClose, &ticks->fVol);
+			ticks->time = convertTime(TimeClose);
 		}
+		return i;
 	}
 
 	if(g_Warned++ <= 1) showError(Asset,"no data");
@@ -574,13 +574,16 @@ DLLFUNC int BrokerTrade(int nTradeID,double *pOpen,double *pClose,double *pCost,
 {
 	if(!isConnected(1)) return 0;
 
-	char Path[512] = "/api/v5/trade/order?ordId=";
-	strcat_s(Path, itoa(nTradeID));
+	char Path[512] = "/api/v5/trade/order?clOrdId=";
+	const char* clOrdId = itoa(nTradeID);
+	strcat_s(Path, clOrdId);
 	strcat_s(Path, "&instId=");
 	strcat_s(Path, g_Asset);
 	char* Result = send(Path, NULL, 1);
+	const char *names[] = { "clOrdId", "instId" };
+	const char *values[] = { clOrdId, g_Asset };
+	if (!isResponseOk(Path, NULL, Result, names, values, 2)) return 0;
 
-	if(!Result || !*Result) return 0;
 /*// response
 {
   "code": "0",
@@ -615,8 +618,6 @@ DLLFUNC int BrokerTrade(int nTradeID,double *pOpen,double *pClose,double *pCost,
   ]
 }
 */
-	if(!strstr(Result,"ordId")) return 0;
-	if(!parse(Result)) return 0;
 	double Price = atof(parse(Result, "avgPx"));
 	if (pOpen) *pOpen = Price;
 	double Cost = atof(parse(Result, "fee"));
@@ -663,14 +664,13 @@ DLLFUNC int BrokerBuy2(char* Asset,int Amount,double dStopDist,double Limit,doub
 	char sz[6];
 	strcat_s(sz, ftoa(g_Amount*labs(Amount)));
 	char Body[512];
-	sprintf_s(Body, "{ \"instId\":%s, \"clOrdId\": %i, \"tdMode\": %s, \"side\": %s, \"ordType\": %s, \"px\": %s, \"sz\": %s}", g_Asset, g_Id++, g_TradeMode, side, ordType, px, sz);
+	int iClOrdId = g_Id++;
+	char* clOrdId = itoa(iClOrdId);
+	sprintf_s(Body, "{ \"instId\":%s, \"clOrdId\": %i, \"tdMode\": %s, \"side\": %s, \"ordType\": %s, \"px\": %s, \"sz\": %s}", g_Asset, clOrdId, g_TradeMode, side, ordType, px, sz);
 	char* Result = send(Path, Body, 1);
-	if(!Result || !*Result) {
-		char Context[512];
-		sprintf_s(Context, "%s - %s", Path, Body);
-		showError(Context,"- no result");
-		return 0;
-	}
+	const char *names[] = { "clOrdId" };
+	const char *values[] = { clOrdId };
+	if (!isResponseOk(Path, Body, Result, names, values, 1)) return 0;
 /*// response
 {
   "code": "0",
@@ -686,41 +686,23 @@ DLLFUNC int BrokerBuy2(char* Asset,int Amount,double dStopDist,double Limit,doub
   ]
 }
 */
-	if(!strstr(Result,"clOrdId")) {
-		char Context[512];
-		sprintf_s(Context, "%s - %s", Path, Body);
-		showError(Context,Result);
-		return 0;
-	}
-	if(!parse(Result)) {
-		showError(Result,"- invalid");
-		return 0;
-	}
-	int Id = atoi(parse(Result, "clOrdId"));
-	const char* ordId = parse(Result, "ordId");
 
 	//char Path2[512] = "/api/v5/trade/order";
-	strcat_s(Path, "?ordId=");
-	strcat_s(Path, ordId);
+	strcat_s(Path, "?clOrdId=");
+	strcat_s(Path, clOrdId);
 	strcat_s(Path, "&instId=");
 	strcat_s(Path, g_Asset);
 	Result = send(Path, NULL, 1);
-	if (!Result || !*Result || !strstr(Result, "clOrdId")) {
-		showError(Path, "- no result");
-		return 0;
-	}
-	if (!parse(Result)) {
-		showError(Result, "- invalid");
-		return 0;
-	}
+	if (!isResponseOk(Path, NULL, Result, names, values, 1)) return 0;
+
 	int Fill = atof(parse(Result,"accFillSz"))/g_Amount;
 	double Price = atof(parse(NULL,"avgPx"));
 	if(pPrice && Price > 0.) *pPrice = Price;
 	if(pFill) *pFill = Fill;
-	if(g_OrderType == 2 || Fill == Amount)
-		return Id; // fully filled or GTC
+	if(g_OrderType == 2 || Fill == Amount)		// TODO: check the NFA, Hedging and Order Type settings
+		return iClOrdId; // fully filled or GTC
 	if(Fill)
-		return Id; // IOC partially or FOK fully filled
+		return iClOrdId; // IOC partially or FOK fully filled
 	return 0;
 }
 
@@ -806,11 +788,9 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			char Body[64];
 			sprintf_s(Body, "{\"posMode\":\"%s\"}", PositionMode);
 			char* Result = send(Path, Body, 1);
-			if (!Result || !*Result) return 0;
-			if (!strstr(Result, "posMode") || !strstr(Result, PositionMode)) {
-				showError(Path, "- no result");
-				return 0;
-			}
+			const char *names[] = { "posMode" };
+			const char *values[] = { PositionMode };
+			if (!isResponseOk(Path, Body, Result, names, values, 1)) return 0;
 			strcpy_s(g_PositionMode, PositionMode);
 			return 1;
 		}
@@ -830,18 +810,9 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			if (!posSide || !*posSide) return 0;
 			sprintf_s(Body, "{\"instId\": \"%s\",\"lever\": \"%s,\"mgnMode\": \"%s,\"posSide\": \"%s\"}", instId, lever, mgnMode, posSide);
 			char* Result = send(Path, Body, 1);
-			if (!Result || !*Result) {
-				showError(Path, "- no result");
-				return 0;
-			}
-			if (!strstr(Result, "instId") || !strstr(Result, instId) ||
-				!strstr(Result, "lever") || !strstr(Result, lever) ||
-				!strstr(Result, "mgnMode") || !strstr(Result, mgnMode) ||
-				!strstr(Result, "posSide") || !strstr(Result, posSide)
-				) {
-				showError(Path, Result);
-				return 0;
-			}
+			const char *names[] = { "instId", "lever", "mgnMode", "posSide" };
+			const char *values[] = { instId, lever, mgnMode, posSide };
+			if (!isResponseOk(Path, Body, Result, names, values, 4)) return 0;
 			return 1;
 		}
 
@@ -867,7 +838,9 @@ DLLFUNC double BrokerCommand(int command,DWORD parameter)
 			char Body[512];
 			sprintf_s(Body, "{\"clOrdId\": \"%s\",\"instId\": \"%s\"}", itoa(parameter), g_Asset);
 			char* Result = send(Path, Body, 1);
-			if(!Result || !*Result) return 0;
+			const char *names[] = { "clOrdId" };
+			const char *values[] = { (char*)parameter };
+			if (!isResponseOk(Path, Body, Result, names, values, 1)) return 0;
 			return 1;
 		}
 
