@@ -83,7 +83,7 @@ static char g_Account[32] = "", g_Asset[64] = "";
 static char g_TradeMode[32] = "";
 static char g_PositionMode[32] = "";
 static char g_Uuid[256] = "";
-static char g_Password[256] = "", g_Secret[256] = "", g_Passphrase[256] = "";
+static char g_ApiKey[256] = "", g_Passphrase[256] = "", g_Secret[256] = "";
 static char g_Timestamp[64];
 static char g_Command[1024];
 static int g_Warned = 0;
@@ -158,7 +158,7 @@ int sleep(int ms)
 inline BOOL isConnected(int Key = 0)
 {
 	if(g_bDemoOnly || !g_bConnected) return 0;
-	if(Key && (!*g_Password || !*g_Secret)) return 0;
+	if(Key && (!*g_ApiKey || !*g_Secret)) return 0;
 	return 1;
 }
 
@@ -279,7 +279,7 @@ char* send(const char* path, const char* body = NULL, int crypt = 0)
 
 		char Header[1024]; 
 		strcpy_s(Header,"Content-Type: application/json");
-		strcat_s(Header,"\nOK-ACCESS-KEY: "); strcat_s(Header, g_Password);
+		strcat_s(Header,"\nOK-ACCESS-KEY: "); strcat_s(Header, g_ApiKey);
 		strcat_s(Header,"\nOK-ACCESS-SIGN: "); strcat_s(Header, okexSignature);
 		strcat_s(Header,"\nOK-ACCESS-PASSPHRASE: "); strcat_s(Header, g_Passphrase);
 		strcat_s(Header,"\nOK-ACCESS-TIMESTAMP: "); strcat_s(Header, g_Timestamp);			
@@ -723,21 +723,28 @@ DLLFUNC int BrokerLogin(char* User,char* Pwd,char* Type,char* Account)
 		else
 			g_bIsDemo = FALSE;
 
+		BrokerError("\n!OKEx Plugin, version: 0.1.0");
+
 		g_Warned = 0;
-		strcpy_s(g_Password,User);
-		strcpy_s(g_Secret, Pwd);
-		char* Space = strchr(g_Secret, ' ');
+		strcpy_s(g_ApiKey,User);
+		char* Space = strchr(g_ApiKey, ' ');
 		if (Space)
 		{
 			strcpy_s(g_Passphrase, Space + 1);
 			*Space = 0;
 		}
 		else {
-			*g_Password = 0;
+			*g_ApiKey = 0;
 			*g_Secret = 0;
-			BrokerError("Error: Password must be divisible \n\ninto two space-separated strings.\n\nThe password should be formed like so:\n '<SecretKey> <Passphrase>' \n\nwithout quotes.");
+			//BrokerError("Error: Password must be divisible \n\ninto two space-separated strings.\n\nThe password should be formed like so:\n '<SecretKey> <Passphrase>' \n\nwithout quotes.");
+			BrokerError("\n!Tokenizer failure @ key.");
+			BrokerError("\n!Required format:");
+			BrokerError("\n!User: \"[api key][passphrase]\" (with a space between, no square brackets, no quotes)");
+			BrokerError("\n!Pwd: \"[Secret]\" (no quotes)");
+
 			return 0;
 		}
+		strcpy_s(g_Secret, Pwd);
 
 		g_bConnected = 1;
 		time_t Time;
@@ -753,7 +760,7 @@ DLLFUNC int BrokerLogin(char* User,char* Pwd,char* Type,char* Account)
 		if(g_HttpId) 
 			http_free(g_HttpId);
 		g_HttpId = 0;
-		*g_Password = 0;
+		*g_ApiKey = 0;
 		*g_Secret = 0;
 	}
 	return 0;
