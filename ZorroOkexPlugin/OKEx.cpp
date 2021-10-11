@@ -723,7 +723,7 @@ DLLFUNC int BrokerLogin(char* User,char* Pwd,char* Type,char* Account)
 		else
 			g_bIsDemo = FALSE;
 
-		BrokerError("\n!OKEx Plugin, version: 0.1.0");
+		BrokerError("!OKEx Plugin, version: 0.1.0");
 
 		g_Warned = 0;
 		strcpy_s(g_ApiKey,User);
@@ -737,10 +737,10 @@ DLLFUNC int BrokerLogin(char* User,char* Pwd,char* Type,char* Account)
 			*g_ApiKey = 0;
 			*g_Secret = 0;
 			//BrokerError("Error: Password must be divisible \n\ninto two space-separated strings.\n\nThe password should be formed like so:\n '<SecretKey> <Passphrase>' \n\nwithout quotes.");
-			BrokerError("\n!Tokenizer failure @ key.");
-			BrokerError("\n!Required format:");
-			BrokerError("\n!User: \"[api key][passphrase]\" (with a space between, no square brackets, no quotes)");
-			BrokerError("\n!Pwd: \"[Secret]\" (no quotes)");
+			BrokerError("!Tokenizer failure @ key.");
+			BrokerError("!Required format:");
+			BrokerError("!User: \"[api key][passphrase]\" (with a space between, no square brackets, no quotes)");
+			BrokerError("!Pwd: \"[Secret]\" (no quotes)");
 
 			return 0;
 		}
